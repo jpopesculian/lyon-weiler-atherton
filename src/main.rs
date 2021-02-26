@@ -283,47 +283,200 @@ fn update_intersections(
         .collect()
 }
 
-#[derive(Debug)]
-enum PointLabel {
-    Inside,
-    Outside,
-    Intersection,
-    Undefined,
+#[derive(Copy, Clone)]
+enum IntersectionLabel {
+    InsideToOutside,
+    OutsideToInside,
 }
 
 // NOTE uses og_left (e.g. before intersections) because of the following issue https://github.com/nical/lyon/issues/636
-fn label_points(
+fn label_intersections(
     og_left: &[PathEvent],
     right: &[PathEvent],
     intersections: &[(usize, usize)],
     fill_rule: FillRule,
     tolerance: f32,
-) -> Vec<PointLabel> {
+) -> Vec<IntersectionLabel> {
     let right_intersections = intersections.iter().map(|(_, i)| *i).collect::<Vec<_>>();
-    right
-        .iter()
-        .enumerate()
-        .map(|(index, event)| {
-            if right_intersections.contains(&index) {
-                return PointLabel::Intersection;
-            }
-            let point = match event {
-                PathEvent::Begin { at } => at,
-                PathEvent::Line { to, .. } => to,
-                PathEvent::Quadratic { to, .. } => to,
-                PathEvent::Cubic { to, .. } => to,
-                PathEvent::End {
-                    first, close: true, ..
-                } => first,
-                _ => return PointLabel::Undefined,
-            };
-            if hit_test_path(point, og_left.iter().cloned(), fill_rule, tolerance) {
-                PointLabel::Inside
+    let mut inside = match &right[0] {
+        PathEvent::Begin { at } => hit_test_path(at, og_left.iter().cloned(), fill_rule, tolerance),
+        _ => panic!("path should start with PathEvent::Begin"),
+    };
+    let mut intersection_labels = Vec::with_capacity(right_intersections.len());
+    for (index, _) in right.iter().enumerate() {
+        if right_intersections.contains(&index) {
+            intersection_labels.push(if inside {
+                IntersectionLabel::InsideToOutside
             } else {
-                PointLabel::Outside
+                IntersectionLabel::OutsideToInside
+            });
+            inside = !inside;
+        }
+    }
+    intersection_labels
+}
+
+#[derive(Copy, Clone)]
+enum SelectionRule {
+    Intersection,
+}
+
+fn select_path_events(
+    left: &[PathEvent],
+    right: &[PathEvent],
+    intersections: &[(usize, usize)],
+    intersection_labels: &[IntersectionLabel],
+    selection_rule: SelectionRule,
+) -> Vec<PathEvent> {
+    let starting_intersection = intersections[0];
+    let mut is_cur_left = true;
+    let mut cur_path_index = starting_intersection.0;
+    let mut out = Vec::with_capacity(right.len());
+
+    let starting_point = match &left[cur_path_index] {
+        PathEvent::Line { to, .. }
+        | PathEvent::Quadratic { to, .. }
+        | PathEvent::Cubic { to, .. } => *to,
+        PathEvent::Begin { .. } => {
+            unreachable!("an intersection cannot occur at a PathEvent::Begin")
+        }
+        PathEvent::End {
+            first, close: true, ..
+        } => *first,
+        PathEvent::End { close: false, .. } => {
+            unreachable!("an intersection cannot occur at a PathEvent::End that does not close")
+        }
+    };
+    out.push(PathEvent::Begin { at: starting_point });
+
+    loop {
+        if let Some(index) = intersections
+            .iter()
+            .map(|(l, r)| if is_cur_left { l } else { r })
+            .enumerate()
+            .find_map(|(index, intersection)| {
+                if intersection == &cur_path_index {
+                    Some(index)
+                } else {
+                    None
+                }
+            })
+        {
+            let label = intersection_labels[index];
+            let intersection = intersections[index];
+            match (label, selection_rule) {
+                (IntersectionLabel::InsideToOutside, SelectionRule::Intersection) => {
+                    is_cur_left = true;
+                    cur_path_index = intersection.0;
+                }
+                (IntersectionLabel::OutsideToInside, SelectionRule::Intersection) => {
+                    is_cur_left = false;
+                    cur_path_index = intersection.1;
+                }
             }
-        })
-        .collect()
+        }
+
+        cur_path_index += 1;
+        if (is_cur_left && cur_path_index >= left.len())
+            || (!is_cur_left && cur_path_index >= right.len())
+        {
+            // skip PathEvent::Begin event
+            cur_path_index = 1;
+        }
+
+        let (next_event, mut is_end) = if is_cur_left {
+            (
+                left[cur_path_index],
+                cur_path_index == starting_intersection.0,
+            )
+        } else {
+            (
+                right[cur_path_index],
+                cur_path_index == starting_intersection.1,
+            )
+        };
+
+        match next_event {
+            PathEvent::Begin { .. } => {
+                panic!("should skip first PathEvent::Begin while select path events")
+            }
+            PathEvent::End {
+                last, close: false, ..
+            } => {
+                out.push(PathEvent::End {
+                    last,
+                    first: starting_point,
+                    close: false,
+                });
+                is_end = true;
+            }
+            PathEvent::End {
+                last,
+                first,
+                close: true,
+            } => {
+                if is_end {
+                    out.push(PathEvent::End {
+                        last,
+                        first: starting_point,
+                        close: true,
+                    });
+                } else {
+                    out.push(PathEvent::Line {
+                        from: last,
+                        to: first,
+                    });
+                }
+            }
+            PathEvent::Line { from, to } => {
+                if is_end {
+                    out.push(PathEvent::End {
+                        last: from,
+                        first: starting_point,
+                        close: true,
+                    });
+                } else {
+                    out.push(PathEvent::Line { from, to });
+                }
+            }
+            PathEvent::Quadratic { from, to, ctrl } => {
+                out.push(PathEvent::Quadratic { from, to, ctrl });
+                if is_end {
+                    out.push(PathEvent::End {
+                        last: to,
+                        first: starting_point,
+                        close: true,
+                    });
+                }
+            }
+            PathEvent::Cubic {
+                from,
+                to,
+                ctrl1,
+                ctrl2,
+            } => {
+                out.push(PathEvent::Cubic {
+                    from,
+                    to,
+                    ctrl1,
+                    ctrl2,
+                });
+                if is_end {
+                    out.push(PathEvent::End {
+                        last: to,
+                        first: starting_point,
+                        close: true,
+                    });
+                }
+            }
+        };
+
+        if is_end {
+            break;
+        }
+    }
+
+    out
 }
 
 fn main() {
@@ -355,6 +508,14 @@ fn main() {
 
     let og_left = left.clone();
     let intersections = update_intersections(&mut left, &mut right);
-    let labels = label_points(&og_left, &right, &intersections, FillRule::NonZero, 0.0001);
-    println!("{:?}", labels);
+    let intersection_labels =
+        label_intersections(&og_left, &right, &intersections, FillRule::NonZero, 0.0001);
+    let out = select_path_events(
+        &left,
+        &right,
+        &intersections,
+        &intersection_labels,
+        SelectionRule::Intersection,
+    );
+    println!("{:?}", out);
 }

@@ -1,6 +1,7 @@
+use lyon::algorithms::hit_test::hit_test_path;
 use lyon::geom::arrayvec::ArrayVec;
 use lyon::geom::{BezierSegment, CubicBezierSegment, LineSegment, QuadraticBezierSegment};
-use lyon::path::PathEvent;
+use lyon::path::{FillRule, PathEvent};
 use rayon::prelude::*;
 
 pub trait BezierSegmentExt<S> {
@@ -8,7 +9,6 @@ pub trait BezierSegmentExt<S> {
     fn to_quadratic(self) -> Option<QuadraticBezierSegment<S>>;
     fn to_cubic(self) -> Option<CubicBezierSegment<S>>;
 }
-
 impl<S> BezierSegmentExt<S> for BezierSegment<S> {
     fn to_linear(self) -> Option<LineSegment<S>> {
         match self {
@@ -270,12 +270,60 @@ where
     inserted_indices
 }
 
-fn update_intersections(left: &mut Vec<PathEvent>, right: &mut Vec<PathEvent>) {
+fn update_intersections(
+    left: &mut Vec<PathEvent>,
+    right: &mut Vec<PathEvent>,
+) -> Vec<(usize, usize)> {
     let intersections = path_intersections_t(left, right);
     let left_inserted = insert_intersections(left, intersections.iter().map(|i| i.left));
     let right_inserted = insert_intersections(right, intersections.iter().map(|i| i.right));
-    println!("{:?}", left_inserted);
-    println!("{:?}", right_inserted);
+    left_inserted
+        .into_iter()
+        .zip(right_inserted.into_iter())
+        .collect()
+}
+
+#[derive(Debug)]
+enum PointLabel {
+    Inside,
+    Outside,
+    Intersection,
+    Undefined,
+}
+
+// NOTE uses og_left (e.g. before intersections) because of the following issue https://github.com/nical/lyon/issues/636
+fn label_points(
+    og_left: &[PathEvent],
+    right: &[PathEvent],
+    intersections: &[(usize, usize)],
+    fill_rule: FillRule,
+    tolerance: f32,
+) -> Vec<PointLabel> {
+    let right_intersections = intersections.iter().map(|(_, i)| *i).collect::<Vec<_>>();
+    right
+        .iter()
+        .enumerate()
+        .map(|(index, event)| {
+            if right_intersections.contains(&index) {
+                return PointLabel::Intersection;
+            }
+            let point = match event {
+                PathEvent::Begin { at } => at,
+                PathEvent::Line { to, .. } => to,
+                PathEvent::Quadratic { to, .. } => to,
+                PathEvent::Cubic { to, .. } => to,
+                PathEvent::End {
+                    first, close: true, ..
+                } => first,
+                _ => return PointLabel::Undefined,
+            };
+            if hit_test_path(point, og_left.iter().cloned(), fill_rule, tolerance) {
+                PointLabel::Inside
+            } else {
+                PointLabel::Outside
+            }
+        })
+        .collect()
 }
 
 fn main() {
@@ -305,5 +353,8 @@ fn main() {
     .path_events()
     .collect();
 
-    update_intersections(&mut left, &mut right);
+    let og_left = left.clone();
+    let intersections = update_intersections(&mut left, &mut right);
+    let labels = label_points(&og_left, &right, &intersections, FillRule::NonZero, 0.0001);
+    println!("{:?}", labels);
 }

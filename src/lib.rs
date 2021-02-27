@@ -4,7 +4,7 @@ use lyon::geom::{BezierSegment, CubicBezierSegment, LineSegment, QuadraticBezier
 use lyon::path::{FillRule, PathEvent};
 use rayon::prelude::*;
 
-pub trait BezierSegmentExt<S> {
+trait BezierSegmentExt<S> {
     fn to_linear(self) -> Option<LineSegment<S>>;
     fn to_quadratic(self) -> Option<QuadraticBezierSegment<S>>;
     fn to_cubic(self) -> Option<CubicBezierSegment<S>>;
@@ -121,8 +121,7 @@ fn intersections_t(
     out
 }
 
-#[derive(Debug)]
-pub struct IndexedIntersectionT {
+struct IndexedIntersectionT {
     left: (usize, f32),
     right: (usize, f32),
 }
@@ -289,9 +288,8 @@ enum IntersectionLabel {
     OutsideToInside,
 }
 
-// NOTE uses og_left (e.g. before intersections) because of the following issue https://github.com/nical/lyon/issues/636
 fn label_intersections(
-    og_left: &[PathEvent],
+    left: &[PathEvent],
     right: &[PathEvent],
     intersections: &[(usize, usize)],
     fill_rule: FillRule,
@@ -299,7 +297,7 @@ fn label_intersections(
 ) -> Vec<IntersectionLabel> {
     let right_intersections = intersections.iter().map(|(_, i)| *i).collect::<Vec<_>>();
     let mut inside = match &right[0] {
-        PathEvent::Begin { at } => hit_test_path(at, og_left.iter().cloned(), fill_rule, tolerance),
+        PathEvent::Begin { at } => hit_test_path(at, left.iter().cloned(), fill_rule, tolerance),
         _ => panic!("path should start with PathEvent::Begin"),
     };
     let mut intersection_labels = Vec::with_capacity(right_intersections.len());
@@ -317,7 +315,7 @@ fn label_intersections(
 }
 
 #[derive(Copy, Clone)]
-enum SelectionRule {
+pub enum SelectionRule {
     Intersection,
 }
 
@@ -479,43 +477,77 @@ fn select_path_events(
     out
 }
 
-fn main() {
-    use lyon::geom::point;
-    use lyon::path::polygon::Polygon;
-    let mut left: Vec<PathEvent> = Polygon {
-        points: &[
-            point(-10., 10.),
-            point(10., 10.),
-            point(10., -10.),
-            point(-10., -10.),
-        ],
-        closed: true,
-    }
-    .path_events()
-    .collect();
-
-    let mut right: Vec<PathEvent> = Polygon {
-        points: &[
-            point(-5., 5.),
-            point(15., 5.),
-            point(15., -15.),
-            point(-5., -15.),
-        ],
-        closed: true,
-    }
-    .path_events()
-    .collect();
-
-    let og_left = left.clone();
+pub fn clip<LeftIter, RightIter>(
+    left: LeftIter,
+    right: RightIter,
+    selection_rule: SelectionRule,
+    fill_rule: FillRule,
+    tolerance: f32,
+) -> Vec<PathEvent>
+where
+    LeftIter: IntoIterator<Item = PathEvent>,
+    RightIter: IntoIterator<Item = PathEvent>,
+{
+    let mut left = left.into_iter().collect();
+    let mut right = right.into_iter().collect();
     let intersections = update_intersections(&mut left, &mut right);
     let intersection_labels =
-        label_intersections(&og_left, &right, &intersections, FillRule::NonZero, 0.0001);
-    let out = select_path_events(
+        label_intersections(&left, &right, &intersections, fill_rule, tolerance);
+    select_path_events(
         &left,
         &right,
         &intersections,
         &intersection_labels,
-        SelectionRule::Intersection,
-    );
-    println!("{:?}", out);
+        selection_rule,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intersect_squares() {
+        use lyon::geom::point;
+        use lyon::path::polygon::Polygon;
+        let left = Polygon {
+            points: &[
+                point(-10., 10.),
+                point(10., 10.),
+                point(10., -10.),
+                point(-10., -10.),
+            ],
+            closed: true,
+        };
+
+        let right = Polygon {
+            points: &[
+                point(-5., 5.),
+                point(15., 5.),
+                point(15., -15.),
+                point(-5., -15.),
+            ],
+            closed: true,
+        };
+
+        let out = clip(
+            left.path_events(),
+            right.path_events(),
+            SelectionRule::Intersection,
+            FillRule::NonZero,
+            0.,
+        );
+
+        let expected_out = Polygon {
+            points: &[
+                point(10., 5.),
+                point(10., -10.),
+                point(-5., -10.),
+                point(-5., 5.),
+            ],
+            closed: true,
+        };
+
+        assert_eq!(out, expected_out.path_events().collect::<Vec<_>>());
+    }
 }

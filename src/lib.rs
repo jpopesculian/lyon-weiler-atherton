@@ -300,14 +300,16 @@ fn label_intersections(
         PathEvent::Begin { at } => hit_test_path(at, left.iter().cloned(), fill_rule, tolerance),
         _ => panic!("path should start with PathEvent::Begin"),
     };
-    let mut intersection_labels = Vec::with_capacity(right_intersections.len());
-    for (index, _) in right.iter().enumerate() {
-        if right_intersections.contains(&index) {
-            intersection_labels.push(if inside {
+    let mut intersection_labels =
+        vec![IntersectionLabel::InsideToOutside; right_intersections.len()];
+    for (path_index, _) in right.iter().enumerate() {
+        if let Some(intersection_index) = right_intersections.iter().position(|&i| i == path_index)
+        {
+            intersection_labels[intersection_index] = if inside {
                 IntersectionLabel::InsideToOutside
             } else {
                 IntersectionLabel::OutsideToInside
-            });
+            };
             inside = !inside;
         }
     }

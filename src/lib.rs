@@ -253,16 +253,26 @@ where
     I: Iterator<Item = (usize, f32)>,
 {
     let insertions: Vec<(usize, f32)> = insertions.collect();
-    let mut sorted: Vec<(usize, f32)> = insertions.clone();
-    sorted.sort_by(|(i1, f1), (i2, f2)| match i1.cmp(i2) {
-        std::cmp::Ordering::Equal => f1.partial_cmp(f2).unwrap(),
+    let mut normalized: Vec<(usize, f32, f32)> =
+        insertions.iter().cloned().map(|(i, t)| (i, t, t)).collect();
+    normalized.sort_by(|(i1, t1, _), (i2, t2, _)| match i1.cmp(i2) {
+        std::cmp::Ordering::Equal => t1.partial_cmp(t2).unwrap(),
         c => c,
     });
+    let mut last_insertion: Option<(usize, f32, f32)> = None;
+    for insertion in normalized.iter_mut() {
+        if let Some(last_insertion) = last_insertion {
+            if last_insertion.0 == insertion.0 {
+                insertion.1 = (insertion.1 - last_insertion.2) / (1. - last_insertion.2);
+            }
+        }
+        last_insertion = Some(*insertion);
+    }
     let mut inserted_indices = vec![0; insertions.len()];
     let mut offset = 0;
-    for (index, t) in sorted {
+    for (index, t, og_t) in normalized {
         insert_intersection(path, index + offset, t);
-        let og_index = insertions.iter().position(|i| i == &(index, t)).unwrap();
+        let og_index = insertions.iter().position(|i| i == &(index, og_t)).unwrap();
         inserted_indices[og_index] = index + offset;
         offset += 1;
     }

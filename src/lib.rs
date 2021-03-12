@@ -78,7 +78,7 @@ where
                 last,
                 first,
                 close: true,
-            } => (first.x - last.x) * (first.y - last.y),
+            } => (first.x - last.x) * (first.y + last.y),
             PathEvent::End { close: false, .. } => 0.,
             _ => unreachable!("flattened should remove curve events"),
         })

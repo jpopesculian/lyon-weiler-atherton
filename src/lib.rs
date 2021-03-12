@@ -495,7 +495,7 @@ pub fn clip<LeftIter, RightIter>(
     selection_rule: SelectionRule,
     fill_rule: FillRule,
     tolerance: f32,
-) -> Vec<PathEvent>
+) -> Vec<Vec<PathEvent>>
 where
     LeftIter: IntoIterator<Item = PathEvent>,
     RightIter: IntoIterator<Item = PathEvent>,
@@ -503,15 +503,20 @@ where
     let mut left = left.into_iter().collect();
     let mut right = right.into_iter().collect();
     let intersections = update_intersections(&mut left, &mut right);
+    if intersections.is_empty() {
+        return match selection_rule {
+            SelectionRule::Intersection => vec![],
+        };
+    }
     let intersection_labels =
         label_intersections(&left, &right, &intersections, fill_rule, tolerance);
-    select_path_events(
+    vec![select_path_events(
         &left,
         &right,
         &intersections,
         &intersection_labels,
         selection_rule,
-    )
+    )]
 }
 
 #[cfg(test)]
@@ -560,6 +565,6 @@ mod tests {
             closed: true,
         };
 
-        assert_eq!(out, expected_out.path_events().collect::<Vec<_>>());
+        assert_eq!(out[0], expected_out.path_events().collect::<Vec<_>>());
     }
 }

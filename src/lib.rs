@@ -3,6 +3,7 @@ use lyon::geom::arrayvec::ArrayVec;
 use lyon::geom::{BezierSegment, CubicBezierSegment, LineSegment, QuadraticBezierSegment};
 use lyon::path::{FillRule, PathEvent};
 use rayon::prelude::*;
+use std::collections::HashSet;
 
 trait BezierSegmentExt<S> {
     fn to_linear(self) -> Option<LineSegment<S>>;
@@ -409,11 +410,13 @@ fn select_path_events(
     intersections: &[(usize, usize)],
     intersection_labels: &[IntersectionLabel],
     selection_rule: SelectionRule,
-) -> Vec<PathEvent> {
-    let starting_intersection = intersections[0];
+    starting_intersection: usize,
+) -> (Vec<PathEvent>, HashSet<usize>) {
+    let starting_intersection = intersections[starting_intersection];
     let mut is_cur_left = true;
     let mut cur_path_index = starting_intersection.0;
     let mut out = Vec::with_capacity(right.len());
+    let mut intersections_used = HashSet::new();
 
     let starting_point = match &left[cur_path_index] {
         PathEvent::Line { to, .. }
@@ -444,6 +447,7 @@ fn select_path_events(
                 }
             })
         {
+            intersections_used.insert(index);
             let label = intersection_labels[index];
             let intersection = intersections[index];
             match (label, selection_rule) {
@@ -558,7 +562,7 @@ fn select_path_events(
         }
     }
 
-    out
+    (out, intersections_used)
 }
 
 pub fn clip<LeftIter, RightIter>(
@@ -587,14 +591,26 @@ where
     }
     let intersection_labels =
         label_intersections(&left, &right, &intersections, fill_rule, tolerance);
-    // TODO deal with all intersections
-    vec![select_path_events(
-        &left,
-        &right,
-        &intersections,
-        &intersection_labels,
-        selection_rule,
-    )]
+
+    let mut out = vec![];
+    let mut intersections_to_be_used = (0..intersections.len()).into_iter().collect::<HashSet<_>>();
+    while !intersections_to_be_used.is_empty() {
+        let next = intersections_to_be_used.iter().cloned().next().unwrap();
+        let (clipped, used) = select_path_events(
+            &left,
+            &right,
+            &intersections,
+            &intersection_labels,
+            selection_rule,
+            next,
+        );
+        intersections_to_be_used = intersections_to_be_used
+            .difference(&used)
+            .cloned()
+            .collect();
+        out.push(clipped);
+    }
+    out
 }
 
 #[cfg(test)]

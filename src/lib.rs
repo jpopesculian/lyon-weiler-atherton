@@ -66,6 +66,26 @@ fn bezier_segment(event: PathEvent) -> Option<BezierSegment<f32>> {
     }
 }
 
+fn is_clockwise<I>(path: I, tolerance: f32) -> bool
+where
+    I: Iterator<Item = PathEvent>,
+{
+    lyon::path::iterator::Flattened::new(tolerance, path)
+        .map(|event| match event {
+            PathEvent::Begin { .. } => 0.,
+            PathEvent::Line { from, to } => (to.x - from.x) * (to.y + from.y),
+            PathEvent::End {
+                last,
+                first,
+                close: true,
+            } => (first.x - last.x) * (first.y - last.y),
+            PathEvent::End { close: false, .. } => 0.,
+            _ => unreachable!("flattened should remove curve events"),
+        })
+        .sum::<f32>()
+        > 0.
+}
+
 fn intersections_t(
     left: &BezierSegment<f32>,
     right: &BezierSegment<f32>,
@@ -500,8 +520,14 @@ where
     LeftIter: IntoIterator<Item = PathEvent>,
     RightIter: IntoIterator<Item = PathEvent>,
 {
-    let mut left = left.into_iter().collect();
-    let mut right = right.into_iter().collect();
+    let mut left = left.into_iter().collect::<Vec<_>>();
+    let mut right = right.into_iter().collect::<Vec<_>>();
+    if is_clockwise(left.iter().cloned(), tolerance)
+        != is_clockwise(right.iter().cloned(), tolerance)
+    {
+        // TODO reverse a path
+        return vec![];
+    }
     let intersections = update_intersections(&mut left, &mut right);
     if intersections.is_empty() {
         return match selection_rule {
@@ -510,6 +536,7 @@ where
     }
     let intersection_labels =
         label_intersections(&left, &right, &intersections, fill_rule, tolerance);
+    // TODO deal with all intersections
     vec![select_path_events(
         &left,
         &right,
@@ -522,11 +549,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lyon::geom::point;
+    use lyon::path::polygon::Polygon;
 
     #[test]
     fn intersect_squares() {
-        use lyon::geom::point;
-        use lyon::path::polygon::Polygon;
         let left = Polygon {
             points: &[
                 point(-10., 10.),
@@ -553,7 +580,8 @@ mod tests {
             SelectionRule::Intersection,
             FillRule::NonZero,
             0.,
-        );
+        )
+        .pop();
 
         let expected_out = Polygon {
             points: &[
@@ -565,6 +593,31 @@ mod tests {
             closed: true,
         };
 
-        assert_eq!(out[0], expected_out.path_events().collect::<Vec<_>>());
+        assert_eq!(out.unwrap(), expected_out.path_events().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn clockwise_square() {
+        let square_cw = Polygon {
+            points: &[
+                point(-10., 10.),
+                point(10., 10.),
+                point(10., -10.),
+                point(-10., -10.),
+            ],
+            closed: true,
+        };
+        assert!(is_clockwise(square_cw.path_events(), 0.01));
+
+        let square_ccw = Polygon {
+            points: &[
+                point(10., 10.),
+                point(-10., 10.),
+                point(-10., -10.),
+                point(10., -10.),
+            ],
+            closed: true,
+        };
+        assert!(!is_clockwise(square_ccw.path_events(), 0.01))
     }
 }

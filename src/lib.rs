@@ -231,8 +231,8 @@ fn insert_intersection(events: &mut Vec<PathEvent>, index: usize, t: f32) {
                 .expect("PathEvent::End expects BezierSegment::Linear");
             events[index] = PathEvent::Cubic {
                 from: left.from,
-                ctrl1: right.ctrl1,
-                ctrl2: right.ctrl2,
+                ctrl1: left.ctrl1,
+                ctrl2: left.ctrl2,
                 to: left.to,
             };
             events.insert(

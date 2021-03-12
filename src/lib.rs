@@ -86,6 +86,58 @@ where
         > 0.
 }
 
+fn reverse(path: &mut [PathEvent]) {
+    match path.first() {
+        Some(PathEvent::Begin { .. }) => {}
+        _ => panic!("expected path to begin with PathEvent::Begin"),
+    }
+    let (new_first, new_end) = match path.last() {
+        Some(PathEvent::End { last, first, close }) => (
+            PathEvent::Begin { at: *last },
+            PathEvent::End {
+                first: *last,
+                last: *first,
+                close: *close,
+            },
+        ),
+        _ => panic!("expected path to end with PathEvent::End"),
+    };
+
+    path.reverse();
+    path[0] = new_first;
+    path[path.len() - 1] = new_end;
+    if path.len() > 2 {
+        for event in path.iter_mut() {
+            match event.clone() {
+                PathEvent::Begin { .. } | PathEvent::End { .. } => {}
+                PathEvent::Line { from, to } => {
+                    *event = PathEvent::Line { from: to, to: from };
+                }
+                PathEvent::Quadratic { from, to, ctrl } => {
+                    *event = PathEvent::Quadratic {
+                        from: to,
+                        to: from,
+                        ctrl,
+                    };
+                }
+                PathEvent::Cubic {
+                    from,
+                    to,
+                    ctrl1,
+                    ctrl2,
+                } => {
+                    *event = PathEvent::Cubic {
+                        from: to,
+                        ctrl1: ctrl2,
+                        ctrl2: ctrl1,
+                        to: from,
+                    };
+                }
+            }
+        }
+    }
+}
+
 fn intersections_t(
     left: &BezierSegment<f32>,
     right: &BezierSegment<f32>,
@@ -525,8 +577,7 @@ where
     if is_clockwise(left.iter().cloned(), tolerance)
         != is_clockwise(right.iter().cloned(), tolerance)
     {
-        // TODO reverse a path
-        return vec![];
+        reverse(&mut right)
     }
     let intersections = update_intersections(&mut left, &mut right);
     if intersections.is_empty() {
@@ -619,5 +670,49 @@ mod tests {
             closed: true,
         };
         assert!(!is_clockwise(square_ccw.path_events(), 0.01))
+    }
+
+    #[test]
+    fn intersect_reversed_squares() {
+        let left = Polygon {
+            points: &[
+                point(-10., 10.),
+                point(10., 10.),
+                point(10., -10.),
+                point(-10., -10.),
+            ],
+            closed: true,
+        };
+
+        let right = Polygon {
+            points: &[
+                point(15., 5.),
+                point(-5., 5.),
+                point(-5., -15.),
+                point(15., -15.),
+            ],
+            closed: true,
+        };
+
+        let out = clip(
+            left.path_events(),
+            right.path_events(),
+            SelectionRule::Intersection,
+            FillRule::NonZero,
+            0.,
+        )
+        .pop();
+
+        let expected_out = Polygon {
+            points: &[
+                point(10., 5.),
+                point(10., -10.),
+                point(-5., -10.),
+                point(-5., 5.),
+            ],
+            closed: true,
+        };
+
+        assert_eq!(out.unwrap(), expected_out.path_events().collect::<Vec<_>>());
     }
 }
